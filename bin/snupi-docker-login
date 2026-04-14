@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: snupi-docker-login [--registry docker.io]
+
+Persist Docker registry auth in the DDN-backed reservation workspace.
+
+Default behavior:
+  - writes auth to ~/work/.docker/config.json
+  - appends DOCKER_CONFIG export to ~/work/.bashrc
+  - creates ~/.docker -> ~/work/.docker when safe
+
+This is for build/push auth inside an already-running pod.
+EOF
+}
+
+die() {
+  echo "snupi-docker-login: $*" >&2
+  exit 1
+}
+
+info() {
+  echo "snupi-docker-login: $*"
+}
+
+ensure_line() {
+  local file="$1"
+  local line="$2"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if ! grep -qxF "$line" "$file"; then
+    printf '%s\n' "$line" >>"$file"
+  fi
+}
+
+registry="docker.io"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry)
+      shift || die "missing value for --registry"
+      registry="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+  shift
+done
+
+[ -n "${HOME:-}" ] || die "HOME is not set"
+
+work_root="${HOME}/work"
+if [ -d "$work_root" ]; then
+  docker_config_dir="${SNUPI_DOCKER_CONFIG:-${work_root}/.docker}"
+  bashrc_path="${work_root}/.bashrc"
+  docker_config_export='export DOCKER_CONFIG="$HOME/work/.docker"'
+else
+  docker_config_dir="${SNUPI_DOCKER_CONFIG:-${HOME}/.docker}"
+  bashrc_path="${HOME}/.bashrc"
+  docker_config_export="export DOCKER_CONFIG=\"${docker_config_dir}\""
+  info "warning: ~/work does not exist; auth will not be DDN-persistent"
+fi
+
+case "$registry" in
+  docker.io|index.docker.io|https://index.docker.io/v1/)
+    auth_key="https://index.docker.io/v1/"
+    registry_label="Docker Hub"
+    ;;
+  *)
+    auth_key="$registry"
+    registry_label="$registry"
+    ;;
+esac
+
+printf '%s username: ' "$registry_label"
+read -r registry_username
+[ -n "$registry_username" ] || die "username must not be blank"
+
+printf '%s personal access token/password: ' "$registry_label"
+read -r -s registry_token
+printf '\n'
+[ -n "$registry_token" ] || die "token/password must not be blank"
+
+install -d -m 0700 "$docker_config_dir"
+export DOCKER_CONFIG="$docker_config_dir"
+config_path="${docker_config_dir}/config.json"
+auth_value="$(printf '%s:%s' "$registry_username" "$registry_token" | base64 | tr -d '\n')"
+
+if command -v python3 >/dev/null 2>&1; then
+  AUTH_KEY="$auth_key" AUTH_VALUE="$auth_value" CONFIG_PATH="$config_path" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+config_path = Path(os.environ["CONFIG_PATH"])
+auth_key = os.environ["AUTH_KEY"]
+auth_value = os.environ["AUTH_VALUE"]
+
+raw = {}
+if config_path.exists():
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"existing Docker config is not valid JSON: {config_path}: {exc}")
+if not isinstance(raw, dict):
+    raise SystemExit(f"existing Docker config is not a JSON object: {config_path}")
+auths = raw.setdefault("auths", {})
+if not isinstance(auths, dict):
+    raise SystemExit(f"existing Docker config auths is not a JSON object: {config_path}")
+auths[auth_key] = {"auth": auth_value}
+tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+tmp_path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp_path.replace(config_path)
+PY
+else
+  cat >"$config_path" <<EOF
+{"auths":{"${auth_key}":{"auth":"${auth_value}"}}}
+EOF
+fi
+
+chmod 0600 "$config_path"
+ensure_line "$bashrc_path" "$docker_config_export"
+
+if [ -d "$work_root" ]; then
+  if [ ! -e "${HOME}/.docker" ]; then
+    ln -s "$docker_config_dir" "${HOME}/.docker"
+  elif [ -L "${HOME}/.docker" ] && [ "$(readlink "${HOME}/.docker")" = "$docker_config_dir" ]; then
+    :
+  elif [ -d "${HOME}/.docker" ] && [ -z "$(find "${HOME}/.docker" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    rmdir "${HOME}/.docker"
+    ln -s "$docker_config_dir" "${HOME}/.docker"
+  else
+    info "leaving existing ~/.docker in place; DOCKER_CONFIG will point at $docker_config_dir in new shells"
+  fi
+fi
+
+info "saved auth for $auth_key to $config_path"
+info "for this shell, run: export DOCKER_CONFIG=\"$docker_config_dir\""
