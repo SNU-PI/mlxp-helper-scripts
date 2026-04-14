@@ -24,14 +24,36 @@ info() {
   echo "snupi-git-setup: $*"
 }
 
-ensure_line() {
-  local file="$1"
-  local line="$2"
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  if ! grep -qxF "$line" "$file"; then
-    printf '%s\n' "$line" >>"$file"
+backup_path() {
+  local path="$1"
+  local timestamp backup
+  timestamp="$(date +%Y%m%d%H%M%S)"
+  backup="${path}.snupi-backup-${timestamp}"
+  while [ -e "$backup" ] || [ -L "$backup" ]; do
+    timestamp="${timestamp}.$RANDOM"
+    backup="${path}.snupi-backup-${timestamp}"
+  done
+  mv "$path" "$backup"
+  info "moved existing $path to $backup"
+}
+
+link_home_path() {
+  local link_path="$1"
+  local target_path="$2"
+  local current_target
+
+  mkdir -p "$(dirname "$link_path")"
+  if [ -L "$link_path" ]; then
+    current_target="$(readlink "$link_path")"
+    if [ "$current_target" = "$target_path" ]; then
+      return
+    fi
+    backup_path "$link_path"
+  elif [ -e "$link_path" ]; then
+    backup_path "$link_path"
   fi
+  ln -s "$target_path" "$link_path"
+  info "linked $link_path -> $target_path"
 }
 
 configure_git_identity_if_missing() {
@@ -66,15 +88,8 @@ configure_ssh() {
   chmod 0600 "$key_path"
   chmod 0644 "${key_path}.pub"
 
-  if [ ! -e "${HOME}/.ssh" ]; then
-    ln -s "$ssh_dir" "${HOME}/.ssh"
-  elif [ -L "${HOME}/.ssh" ] && [ "$(readlink "${HOME}/.ssh")" = "$ssh_dir" ]; then
-    :
-  elif [ -d "${HOME}/.ssh" ] && [ -z "$(find "${HOME}/.ssh" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    rmdir "${HOME}/.ssh"
-    ln -s "$ssh_dir" "${HOME}/.ssh"
-  else
-    info "leaving existing ~/.ssh in place; SSH config is available under $ssh_dir"
+  if [ -d "${HOME}/work" ]; then
+    link_home_path "${HOME}/.ssh" "$ssh_dir"
   fi
 
   cat >"${ssh_dir}/config" <<EOF
@@ -85,10 +100,6 @@ Host ${hostname}
   IdentitiesOnly yes
 EOF
   chmod 0600 "${ssh_dir}/config"
-
-  if [ -d "${HOME}/work" ]; then
-    ensure_line "$bashrc_path" 'test -d "$HOME/work/.ssh" && { [ -e "$HOME/.ssh" ] || ln -s "$HOME/work/.ssh" "$HOME/.ssh"; }'
-  fi
 
   if gh auth status --hostname "$hostname" >/dev/null 2>&1; then
     :
@@ -140,29 +151,27 @@ command -v git >/dev/null 2>&1 || die "git is not installed"
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
 
 if [ -d "${HOME}/work" ]; then
-  gh_config_dir="${SNUPI_GH_CONFIG_DIR:-${HOME}/work/.config/gh}"
-  snupi_ssh_dir="${SNUPI_SSH_DIR:-${HOME}/work/.ssh}"
-  git_config_global="${SNUPI_GIT_CONFIG_GLOBAL:-${HOME}/work/.gitconfig}"
-  bashrc_path="${HOME}/work/.bashrc"
-  gh_config_export='export GH_CONFIG_DIR="$HOME/work/.config/gh"'
-  git_config_export='export GIT_CONFIG_GLOBAL="$HOME/work/.gitconfig"'
+  gh_config_dir="${HOME}/work/.config/gh"
+  snupi_ssh_dir="${HOME}/work/.ssh"
+  git_config_global="${HOME}/work/.gitconfig"
+  link_home_paths=1
 else
-  gh_config_dir="${SNUPI_GH_CONFIG_DIR:-${HOME}/.config/gh}"
-  snupi_ssh_dir="${SNUPI_SSH_DIR:-${HOME}/.ssh}"
-  git_config_global="${SNUPI_GIT_CONFIG_GLOBAL:-${HOME}/.gitconfig}"
-  bashrc_path="${HOME}/.bashrc"
-  gh_config_export="export GH_CONFIG_DIR=\"${gh_config_dir}\""
-  git_config_export="export GIT_CONFIG_GLOBAL=\"${git_config_global}\""
+  gh_config_dir="${HOME}/.config/gh"
+  snupi_ssh_dir="${HOME}/.ssh"
+  git_config_global="${HOME}/.gitconfig"
+  link_home_paths=0
   info "warning: ~/work does not exist; GitHub auth will not be DDN-persistent"
 fi
 
 install -d -m 0700 "$gh_config_dir"
+install -d -m 0700 "$(dirname "$git_config_global")"
 touch "$git_config_global"
 chmod 0600 "$git_config_global"
-export GH_CONFIG_DIR="$gh_config_dir"
-export GIT_CONFIG_GLOBAL="$git_config_global"
-ensure_line "$bashrc_path" "$gh_config_export"
-ensure_line "$bashrc_path" "$git_config_export"
+
+if [ "$link_home_paths" -eq 1 ]; then
+  link_home_path "${HOME}/.config/gh" "$gh_config_dir"
+  link_home_path "${HOME}/.gitconfig" "$git_config_global"
+fi
 
 configure_git_identity_if_missing
 
@@ -179,4 +188,4 @@ else
 fi
 
 info "GitHub CLI config: $gh_config_dir"
-info "for this shell, run: export GH_CONFIG_DIR=\"$gh_config_dir\""
+info "global Git config: $git_config_global"

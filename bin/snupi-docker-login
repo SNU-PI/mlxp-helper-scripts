@@ -9,8 +9,7 @@ Persist Docker registry auth in the DDN-backed reservation workspace.
 
 Default behavior:
   - writes auth to ~/work/.docker/config.json
-  - appends DOCKER_CONFIG export to ~/work/.bashrc
-  - creates ~/.docker -> ~/work/.docker when safe
+  - links ~/.docker -> ~/work/.docker
 
 This is for build/push auth inside an already-running pod.
 EOF
@@ -25,14 +24,36 @@ info() {
   echo "snupi-docker-login: $*"
 }
 
-ensure_line() {
-  local file="$1"
-  local line="$2"
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  if ! grep -qxF "$line" "$file"; then
-    printf '%s\n' "$line" >>"$file"
+backup_path() {
+  local path="$1"
+  local timestamp backup
+  timestamp="$(date +%Y%m%d%H%M%S)"
+  backup="${path}.snupi-backup-${timestamp}"
+  while [ -e "$backup" ] || [ -L "$backup" ]; do
+    timestamp="${timestamp}.$RANDOM"
+    backup="${path}.snupi-backup-${timestamp}"
+  done
+  mv "$path" "$backup"
+  info "moved existing $path to $backup"
+}
+
+link_home_path() {
+  local link_path="$1"
+  local target_path="$2"
+  local current_target
+
+  mkdir -p "$(dirname "$link_path")"
+  if [ -L "$link_path" ]; then
+    current_target="$(readlink "$link_path")"
+    if [ "$current_target" = "$target_path" ]; then
+      return
+    fi
+    backup_path "$link_path"
+  elif [ -e "$link_path" ]; then
+    backup_path "$link_path"
   fi
+  ln -s "$target_path" "$link_path"
+  info "linked $link_path -> $target_path"
 }
 
 registry="docker.io"
@@ -58,13 +79,11 @@ done
 
 work_root="${HOME}/work"
 if [ -d "$work_root" ]; then
-  docker_config_dir="${SNUPI_DOCKER_CONFIG:-${work_root}/.docker}"
-  bashrc_path="${work_root}/.bashrc"
-  docker_config_export='export DOCKER_CONFIG="$HOME/work/.docker"'
+  docker_config_dir="${work_root}/.docker"
+  home_docker_config_dir="${HOME}/.docker"
 else
-  docker_config_dir="${SNUPI_DOCKER_CONFIG:-${HOME}/.docker}"
-  bashrc_path="${HOME}/.bashrc"
-  docker_config_export="export DOCKER_CONFIG=\"${docker_config_dir}\""
+  docker_config_dir="${HOME}/.docker"
+  home_docker_config_dir=""
   info "warning: ~/work does not exist; auth will not be DDN-persistent"
 fi
 
@@ -89,7 +108,6 @@ printf '\n'
 [ -n "$registry_token" ] || die "token/password must not be blank"
 
 install -d -m 0700 "$docker_config_dir"
-export DOCKER_CONFIG="$docker_config_dir"
 config_path="${docker_config_dir}/config.json"
 auth_value="$(printf '%s:%s' "$registry_username" "$registry_token" | base64 | tr -d '\n')"
 
@@ -126,20 +144,10 @@ EOF
 fi
 
 chmod 0600 "$config_path"
-ensure_line "$bashrc_path" "$docker_config_export"
 
-if [ -d "$work_root" ]; then
-  if [ ! -e "${HOME}/.docker" ]; then
-    ln -s "$docker_config_dir" "${HOME}/.docker"
-  elif [ -L "${HOME}/.docker" ] && [ "$(readlink "${HOME}/.docker")" = "$docker_config_dir" ]; then
-    :
-  elif [ -d "${HOME}/.docker" ] && [ -z "$(find "${HOME}/.docker" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    rmdir "${HOME}/.docker"
-    ln -s "$docker_config_dir" "${HOME}/.docker"
-  else
-    info "leaving existing ~/.docker in place; DOCKER_CONFIG will point at $docker_config_dir in new shells"
-  fi
+if [ -n "$home_docker_config_dir" ]; then
+  link_home_path "$home_docker_config_dir" "$docker_config_dir"
 fi
 
 info "saved auth for $auth_key to $config_path"
-info "for this shell, run: export DOCKER_CONFIG=\"$docker_config_dir\""
+info "default Docker config path: ${HOME}/.docker/config.json"

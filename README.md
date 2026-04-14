@@ -16,7 +16,12 @@ replace controller-managed registry pull credentials.
   and global Git config under `~/work/.gitconfig`
 
 Both helpers prefer DDN-backed `~/work` storage so credentials survive pod
-recreation. Treat these directories as sensitive.
+recreation. They link the standard home paths back to those persistent
+locations, so tools can continue using their defaults. Treat these directories
+as sensitive.
+
+If a standard home path already exists and blocks a link, the helper moves it to
+a timestamped `.snupi-backup-*` path before creating the link.
 
 ## Docker Hub Build/Push Auth
 
@@ -32,10 +37,10 @@ The helper writes Docker auth to:
 ~/work/.docker/config.json
 ```
 
-It also appends this to `~/work/.bashrc`:
+It also links the default Docker config directory:
 
-```bash
-export DOCKER_CONFIG="$HOME/work/.docker"
+```text
+~/.docker -> ~/work/.docker
 ```
 
 Use this for build and push from inside a reservation. Pulling the reservation
@@ -61,6 +66,13 @@ It also stores global Git config under:
 ~/work/.gitconfig
 ```
 
+It links the standard GitHub and Git paths:
+
+```text
+~/.config/gh -> ~/work/.config/gh
+~/.gitconfig -> ~/work/.gitconfig
+```
+
 For SSH-based Git instead:
 
 ```bash
@@ -70,3 +82,9 @@ snupi-git-setup --protocol ssh
 SSH mode creates a key under `~/work/.ssh` and attempts to upload the public key
 with `gh ssh-key add`. If upload fails, the script prints the public key so the
 member can add it manually in GitHub.
+
+SSH mode also links:
+
+```text
+~/.ssh -> ~/work/.ssh
+```
