@@ -24,36 +24,17 @@ info() {
   echo "snupi-git-setup: $*"
 }
 
-backup_path() {
-  local path="$1"
-  local timestamp backup
-  timestamp="$(date +%Y%m%d%H%M%S)"
-  backup="${path}.snupi-backup-${timestamp}"
-  while [ -e "$backup" ] || [ -L "$backup" ]; do
-    timestamp="${timestamp}.$RANDOM"
-    backup="${path}.snupi-backup-${timestamp}"
-  done
-  mv "$path" "$backup"
-  info "moved existing $path to $backup"
-}
-
-link_home_path() {
-  local link_path="$1"
-  local target_path="$2"
-  local current_target
-
-  mkdir -p "$(dirname "$link_path")"
-  if [ -L "$link_path" ]; then
-    current_target="$(readlink "$link_path")"
-    if [ "$current_target" = "$target_path" ]; then
-      return
-    fi
-    backup_path "$link_path"
-  elif [ -e "$link_path" ]; then
-    backup_path "$link_path"
+run_linker() {
+  local script_dir linker
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  linker="${script_dir}/snupi-link-persistent-configs"
+  if [ -x "$linker" ]; then
+    "$linker"
+  elif command -v snupi-link-persistent-configs >/dev/null 2>&1; then
+    snupi-link-persistent-configs
+  else
+    info "snupi-link-persistent-configs not found; skipping home link refresh"
   fi
-  ln -s "$target_path" "$link_path"
-  info "linked $link_path -> $target_path"
 }
 
 configure_git_identity_if_missing() {
@@ -88,10 +69,6 @@ configure_ssh() {
   chmod 0600 "$key_path"
   chmod 0644 "${key_path}.pub"
 
-  if [ -d "${HOME}/work" ]; then
-    link_home_path "${HOME}/.ssh" "$ssh_dir"
-  fi
-
   cat >"${ssh_dir}/config" <<EOF
 Host ${hostname}
   HostName ${hostname}
@@ -100,6 +77,7 @@ Host ${hostname}
   IdentitiesOnly yes
 EOF
   chmod 0600 "${ssh_dir}/config"
+  run_linker
 
   if gh auth status --hostname "$hostname" >/dev/null 2>&1; then
     :
@@ -154,12 +132,10 @@ if [ -d "${HOME}/work" ]; then
   gh_config_dir="${HOME}/work/.config/gh"
   snupi_ssh_dir="${HOME}/work/.ssh"
   git_config_global="${HOME}/work/.gitconfig"
-  link_home_paths=1
 else
   gh_config_dir="${HOME}/.config/gh"
   snupi_ssh_dir="${HOME}/.ssh"
   git_config_global="${HOME}/.gitconfig"
-  link_home_paths=0
   info "warning: ~/work does not exist; GitHub auth will not be DDN-persistent"
 fi
 
@@ -167,11 +143,7 @@ install -d -m 0700 "$gh_config_dir"
 install -d -m 0700 "$(dirname "$git_config_global")"
 touch "$git_config_global"
 chmod 0600 "$git_config_global"
-
-if [ "$link_home_paths" -eq 1 ]; then
-  link_home_path "${HOME}/.config/gh" "$gh_config_dir"
-  link_home_path "${HOME}/.gitconfig" "$git_config_global"
-fi
+run_linker
 
 configure_git_identity_if_missing
 

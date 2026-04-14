@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: snupi-link-persistent-configs
+
+Link standard home config paths back to DDN-backed ~/work state when those
+persistent targets already exist.
+EOF
+}
+
+info() {
+  echo "snupi-link-persistent-configs: $*"
+}
+
+backup_path() {
+  local path="$1"
+  local timestamp backup
+  timestamp="$(date +%Y%m%d%H%M%S)"
+  backup="${path}.snupi-backup-${timestamp}"
+  while [ -e "$backup" ] || [ -L "$backup" ]; do
+    timestamp="${timestamp}.$RANDOM"
+    backup="${path}.snupi-backup-${timestamp}"
+  done
+  mv "$path" "$backup"
+  info "moved existing $path to $backup"
+}
+
+link_if_target_exists() {
+  local target_path="$1"
+  local link_path="$2"
+  local current_target
+
+  if [ ! -e "$target_path" ] && [ ! -L "$target_path" ]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "$link_path")"
+  if [ -L "$link_path" ]; then
+    current_target="$(readlink "$link_path")"
+    if [ "$current_target" = "$target_path" ]; then
+      return
+    fi
+    backup_path "$link_path"
+  elif [ -e "$link_path" ]; then
+    backup_path "$link_path"
+  fi
+
+  ln -s "$target_path" "$link_path"
+  info "linked $link_path -> $target_path"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "snupi-link-persistent-configs: unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "${HOME:-}" ]; then
+  echo "snupi-link-persistent-configs: HOME is not set" >&2
+  exit 1
+fi
+
+work_root="${HOME}/work"
+if [ ! -d "$work_root" ]; then
+  info "~/work does not exist; nothing to link"
+  exit 0
+fi
+
+link_if_target_exists "${work_root}/.docker" "${HOME}/.docker"
+link_if_target_exists "${work_root}/.config/gh" "${HOME}/.config/gh"
+link_if_target_exists "${work_root}/.gitconfig" "${HOME}/.gitconfig"
+link_if_target_exists "${work_root}/.ssh" "${HOME}/.ssh"

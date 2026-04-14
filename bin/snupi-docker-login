@@ -9,7 +9,7 @@ Persist Docker registry auth in the DDN-backed reservation workspace.
 
 Default behavior:
   - writes auth to ~/work/.docker/config.json
-  - links ~/.docker -> ~/work/.docker
+  - runs snupi-link-persistent-configs to link ~/.docker -> ~/work/.docker
 
 This is for build/push auth inside an already-running pod.
 EOF
@@ -24,36 +24,17 @@ info() {
   echo "snupi-docker-login: $*"
 }
 
-backup_path() {
-  local path="$1"
-  local timestamp backup
-  timestamp="$(date +%Y%m%d%H%M%S)"
-  backup="${path}.snupi-backup-${timestamp}"
-  while [ -e "$backup" ] || [ -L "$backup" ]; do
-    timestamp="${timestamp}.$RANDOM"
-    backup="${path}.snupi-backup-${timestamp}"
-  done
-  mv "$path" "$backup"
-  info "moved existing $path to $backup"
-}
-
-link_home_path() {
-  local link_path="$1"
-  local target_path="$2"
-  local current_target
-
-  mkdir -p "$(dirname "$link_path")"
-  if [ -L "$link_path" ]; then
-    current_target="$(readlink "$link_path")"
-    if [ "$current_target" = "$target_path" ]; then
-      return
-    fi
-    backup_path "$link_path"
-  elif [ -e "$link_path" ]; then
-    backup_path "$link_path"
+run_linker() {
+  local script_dir linker
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  linker="${script_dir}/snupi-link-persistent-configs"
+  if [ -x "$linker" ]; then
+    "$linker"
+  elif command -v snupi-link-persistent-configs >/dev/null 2>&1; then
+    snupi-link-persistent-configs
+  else
+    info "snupi-link-persistent-configs not found; skipping home link refresh"
   fi
-  ln -s "$target_path" "$link_path"
-  info "linked $link_path -> $target_path"
 }
 
 registry="docker.io"
@@ -80,10 +61,8 @@ done
 work_root="${HOME}/work"
 if [ -d "$work_root" ]; then
   docker_config_dir="${work_root}/.docker"
-  home_docker_config_dir="${HOME}/.docker"
 else
   docker_config_dir="${HOME}/.docker"
-  home_docker_config_dir=""
   info "warning: ~/work does not exist; auth will not be DDN-persistent"
 fi
 
@@ -144,10 +123,7 @@ EOF
 fi
 
 chmod 0600 "$config_path"
-
-if [ -n "$home_docker_config_dir" ]; then
-  link_home_path "$home_docker_config_dir" "$docker_config_dir"
-fi
+run_linker
 
 info "saved auth for $auth_key to $config_path"
 info "default Docker config path: ${HOME}/.docker/config.json"

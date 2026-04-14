@@ -11,6 +11,8 @@ replace controller-managed registry pull credentials.
 
 ## Scripts
 
+- `snupi-link-persistent-configs`: link standard home config paths to existing
+  persistent state under `~/work`
 - `snupi-docker-login`: persist Docker registry auth under `~/work/.docker`
 - `snupi-git-setup`: persist GitHub CLI auth under `~/work/.config/gh`
   and global Git config under `~/work/.gitconfig`
@@ -22,6 +24,10 @@ as sensitive.
 
 If a standard home path already exists and blocks a link, the helper moves it to
 a timestamped `.snupi-backup-*` path before creating the link.
+
+Managed reservation images run `snupi-link-persistent-configs` during shell
+startup after `~/work` is available, so credentials set up once are linked again
+after a later reservation recreates `/root`.
 
 ## Docker Hub Build/Push Auth
 
